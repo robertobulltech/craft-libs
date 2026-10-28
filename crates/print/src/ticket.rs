@@ -29,7 +29,14 @@ pub(crate) fn points(micrometres: u32) -> f64 {
 /// paper is merged in separately, as the driver's own option. Only schema keywords and bounded
 /// numbers go into the XML; the printer name and the document title never do. Two-sided is left
 /// out when the job doesn't set it, so the queue's default applies.
+#[cfg(test)]
 pub(crate) fn ticket_xml(job: &Job, landscape: bool) -> String {
+    ticket_xml_for_duplex(job, landscape, false)
+}
+
+/// Build the job ticket using DocumentDuplex when only that feature is offered.
+/// Unreadable capabilities retain the job-level request and strict validation.
+pub(crate) fn ticket_xml_for_duplex(job: &Job, landscape: bool, document_only: bool) -> String {
     let orientation = if landscape { "Landscape" } else { "Portrait" };
     let duplex = match job.duplex {
         None => String::new(),
@@ -39,7 +46,8 @@ pub(crate) fn ticket_xml(job: &Job, landscape: bool) -> String {
                 Duplex::LongEdge => "TwoSidedLongEdge",
                 Duplex::ShortEdge => "TwoSidedShortEdge",
             };
-            format!("\n <psf:Feature name=\"psk:JobDuplexAllDocumentsContiguously\"><psf:Option name=\"psk:{option}\"/></psf:Feature>")
+            let feature = if document_only { "DocumentDuplex" } else { "JobDuplexAllDocumentsContiguously" };
+            format!("\n <psf:Feature name=\"psk:{feature}\"><psf:Option name=\"psk:{option}\"/></psf:Feature>")
         }
     };
     let collate = if job.collate { "Collated" } else { "Uncollated" };
@@ -293,7 +301,9 @@ pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize, offered: Of
             Duplex::ShortEdge => "TwoSidedShortEdge",
         };
         let one_sided_only = duplex == Duplex::Off && offered.duplex == Some(false);
-        if !one_sided_only && !option("JobDuplexAllDocumentsContiguously").is_some_and(|n| named(n, wanted)) {
+        let duplex_options = [option("JobDuplexAllDocumentsContiguously"), option("DocumentDuplex")];
+        let retained = duplex_options.iter().any(Option::is_some) && duplex_options.into_iter().flatten().all(|n| named(n, wanted));
+        if !one_sided_only && !retained {
             return Err(refused("simplex/duplex setting"));
         }
     }
@@ -794,6 +804,33 @@ mod tests {
         assert!(verify_job_options(&ticket_xml(&simplex, false), &simplex, 3, Offered::default()).is_ok());
         assert!(verify_job_options(&xml, &simplex, 3, Offered::default()).is_err(), "explicit simplex must be confirmed");
         assert!(verify_job_options("<not xml", &default, 1, Offered::default()).is_err());
+    }
+
+    #[test]
+    fn document_duplex_drivers_keep_each_requested_binding() {
+        for choice in [Duplex::Off, Duplex::LongEdge, Duplex::ShortEdge] {
+            let job = Job { duplex: Some(choice), ..Job::default() };
+            let xml = ticket_xml_for_duplex(&job, false, true);
+            assert!(xml.contains("psk:DocumentDuplex"));
+            assert!(!xml.contains("psk:JobDuplexAllDocumentsContiguously"));
+            assert!(verify_job_options(&xml, &job, 3, Offered::default()).is_ok());
+            assert!(verify_job_options(&without(&xml, "DocumentDuplex"), &job, 3, Offered::default()).is_err());
+            assert!(verify_job_options(&xml.replace("psk:DocumentDuplex", "ns0000:DocumentDuplex"), &job, 3, Offered::default()).is_err());
+            for other in ["OneSided", "TwoSidedLongEdge", "TwoSidedShortEdge"] {
+                let wanted = match choice {
+                    Duplex::Off => "OneSided",
+                    Duplex::LongEdge => "TwoSidedLongEdge",
+                    Duplex::ShortEdge => "TwoSidedShortEdge",
+                };
+                if other != wanted {
+                    assert!(verify_job_options(&xml.replace(wanted, other), &job, 3, Offered::default()).is_err());
+                    let conflicting = xml.replace("</psf:PrintTicket>", &format!(
+                        "<psf:Feature name=\"psk:JobDuplexAllDocumentsContiguously\"><psf:Option name=\"psk:{other}\"/></psf:Feature></psf:PrintTicket>"
+                    ));
+                    assert!(verify_job_options(&conflicting, &job, 3, Offered::default()).is_err());
+                }
+            }
+        }
     }
 
     /// PrintCapabilities as a driver might write them: with or without a duplex feature, and the

@@ -41,8 +41,11 @@ pub(crate) fn printers() -> Vec<Printer> {
 /// driver without one cannot confirm an explicit two-sided request, which is refused before submission.
 fn two_sided(device: &PrinterDevice) -> Option<bool> {
     let capabilities = PrintCapabilities::fetch(device).ok()?;
-    let duplex = OwnedName::qualified("JobDuplexAllDocumentsContiguously", NS_PSK, Some("psk"));
-    Some(capabilities.options_for_feature(duplex).any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided"))))
+    Some(["JobDuplexAllDocumentsContiguously", "DocumentDuplex"].into_iter().any(|feature| {
+        capabilities
+            .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
+            .any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided")))
+    }))
 }
 
 /// What the driver's PrintCapabilities offer for the job options [`ticket::verify_job_options`]
@@ -64,7 +67,7 @@ fn select_device(devices: Vec<PrinterDevice>, requested: Option<&str>, default: 
         .ok_or_else(|| spool_error(format!("the printer is not available: {name} (reopen Print to refresh the list)")))
 }
 
-/// The ticket the driver accepted: [`ticket::ticket_xml`] with the driver's own paper option for
+/// The ticket the driver accepted: [`ticket::ticket_xml_for_duplex`] with the driver's own paper option for
 /// `sheet` (its exact option, so a vendor's sizes survive; a ticket with dimensions only can come
 /// back as Letter) and its own "no scaling" option, merged and validated against the printer's
 /// capabilities. For exact size the driver must have that paper; for shrink-to-fit without one,
@@ -96,7 +99,9 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
             )));
         }
     };
-    let requested = PrintTicket::from_xml(ticket::ticket_xml(job, landscape));
+    let offers = |feature| capabilities.options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk"))).next().is_some();
+    let document_only = !offers("JobDuplexAllDocumentsContiguously") && offers("DocumentDuplex");
+    let requested = PrintTicket::from_xml(ticket::ticket_xml_for_duplex(job, landscape, document_only));
     let mut document = PrintTicketDocument::parse_from_bytes(requested.get_xml()).map_err(spool_error)?;
     if let Some(media) = media {
         let media_ticket: PrintTicket = media.clone().into();
@@ -290,9 +295,12 @@ mod tests {
             let (ticket, _) = driver_ticket(&device, &requested, (612.0, 792.0), false).unwrap();
             let retained = ticket::verify_job_options(std::str::from_utf8(ticket.get_xml()).unwrap(), &requested, 3, ticket::Offered::default());
             eprintln!("{feature}={wanted}: {retained:?}");
-            let offered = capabilities
-                .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
-                .any(|o| o.name.as_ref().is_some_and(|n| n.local_name == wanted || (feature == "PageOutputColor" && n.local_name == "Grayscale")));
+            let offered =
+                [feature, if feature == "JobDuplexAllDocumentsContiguously" { "DocumentDuplex" } else { feature }].into_iter().any(|name| {
+                    capabilities.options_for_feature(OwnedName::qualified(name, NS_PSK, Some("psk"))).any(|o| {
+                        o.name.as_ref().is_some_and(|n| n.local_name == wanted || (feature == "PageOutputColor" && n.local_name == "Grayscale"))
+                    })
+                });
             if !offered {
                 assert!(retained.is_err(), "unsupported explicit option must not be silently dropped");
             }
