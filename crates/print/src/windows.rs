@@ -44,14 +44,16 @@ fn two_sided(device: &PrinterDevice) -> Option<bool> {
     Some(["JobDuplexAllDocumentsContiguously", "DocumentDuplex"].into_iter().any(|feature| offers_two_sided(&capabilities, feature)))
 }
 
-/// Use the same two-sided capability predicate for discovery and ticket selection.
+/// Whether the Print Schema keyword `feature` advertises an option whose local name starts
+/// with `TwoSided`. Used for both discovery and ticket selection.
 fn offers_two_sided(capabilities: &PrintCapabilities, feature: &str) -> bool {
     capabilities
         .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
         .any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided")))
 }
 
-/// Prefer document-level duplex when the job-level feature cannot print two sides.
+/// Select document-level duplex only when it advertises a two-sided option and the job-level
+/// feature does not. Otherwise prefer the job-level feature, including when neither offers duplex.
 fn document_duplex_only(capabilities: &PrintCapabilities) -> bool {
     !offers_two_sided(capabilities, "JobDuplexAllDocumentsContiguously") && offers_two_sided(capabilities, "DocumentDuplex")
 }

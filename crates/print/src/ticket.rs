@@ -34,8 +34,11 @@ pub(crate) fn ticket_xml(job: &Job, landscape: bool) -> String {
     ticket_xml_for_duplex(job, landscape, false)
 }
 
-/// Build the job ticket using DocumentDuplex when only that feature offers two-sided printing.
-/// Unreadable capabilities retain the job-level request and strict validation.
+/// Build the job's PrintTicket XML with orientation, copies, collation and no scaling.
+/// `document_only` selects `DocumentDuplex`; otherwise an explicit duplex choice uses
+/// `JobDuplexAllDocumentsContiguously`. With no duplex choice, neither feature is emitted.
+/// Paper is added separately by the caller. The caller reads capabilities before choosing the
+/// feature and returns an error when those capabilities cannot be read.
 pub(crate) fn ticket_xml_for_duplex(job: &Job, landscape: bool, document_only: bool) -> String {
     let orientation = if landscape { "Landscape" } else { "Portrait" };
     let duplex = match job.duplex {
@@ -269,7 +272,10 @@ pub(crate) fn one_job_sides(xml: &str) -> Option<bool> {
 /// document collating for such a driver (the standard XPS filters make the copies, and leave
 /// collated copies to the device only when its GPD or PPD has a Collate command). The job then
 /// asks for one copy and repeats the document instead ([`repeats_collated`]), in one job or a
-/// job per copy ([`one_job_sides`]). An unknown offer (`None`) is checked strictly.
+/// job per copy ([`one_job_sides`]). An unknown offer (`None`) is checked strictly. Explicit
+/// duplex must appear with the requested option in at least one of the job or document features;
+/// if both appear, both must match. The exception is an explicit one-sided request when the
+/// driver is known to have no duplex feature. Malformed XML and unretained options are errors.
 pub(crate) fn verify_job_options(xml: &str, job: &Job, pages: usize, offered: Offered) -> Result<(), Error> {
     let document = roxmltree::Document::parse(xml).map_err(spool_error)?;
     let root = document.root_element();
