@@ -34,7 +34,7 @@ pub(crate) fn ticket_xml(job: &Job, landscape: bool) -> String {
     ticket_xml_for_duplex(job, landscape, false)
 }
 
-/// Build the job ticket using DocumentDuplex when only that feature is offered.
+/// Build the job ticket using DocumentDuplex when only that feature offers two-sided printing.
 /// Unreadable capabilities retain the job-level request and strict validation.
 pub(crate) fn ticket_xml_for_duplex(job: &Job, landscape: bool, document_only: bool) -> String {
     let orientation = if landscape { "Landscape" } else { "Portrait" };

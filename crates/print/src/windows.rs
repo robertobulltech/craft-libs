@@ -41,11 +41,19 @@ pub(crate) fn printers() -> Vec<Printer> {
 /// driver without one cannot confirm an explicit two-sided request, which is refused before submission.
 fn two_sided(device: &PrinterDevice) -> Option<bool> {
     let capabilities = PrintCapabilities::fetch(device).ok()?;
-    Some(["JobDuplexAllDocumentsContiguously", "DocumentDuplex"].into_iter().any(|feature| {
-        capabilities
-            .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
-            .any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided")))
-    }))
+    Some(["JobDuplexAllDocumentsContiguously", "DocumentDuplex"].into_iter().any(|feature| offers_two_sided(&capabilities, feature)))
+}
+
+/// Use the same two-sided capability predicate for discovery and ticket selection.
+fn offers_two_sided(capabilities: &PrintCapabilities, feature: &str) -> bool {
+    capabilities
+        .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
+        .any(|o| o.name.as_ref().is_some_and(|n| n.local_name.starts_with("TwoSided")))
+}
+
+/// Prefer document-level duplex when the job-level feature cannot print two sides.
+fn document_duplex_only(capabilities: &PrintCapabilities) -> bool {
+    !offers_two_sided(capabilities, "JobDuplexAllDocumentsContiguously") && offers_two_sided(capabilities, "DocumentDuplex")
 }
 
 /// What the driver's PrintCapabilities offer for the job options [`ticket::verify_job_options`]
@@ -99,8 +107,7 @@ fn driver_ticket(device: &PrinterDevice, job: &Job, sheet: (f64, f64), landscape
             )));
         }
     };
-    let offers = |feature| capabilities.options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk"))).next().is_some();
-    let document_only = !offers("JobDuplexAllDocumentsContiguously") && offers("DocumentDuplex");
+    let document_only = document_duplex_only(&capabilities);
     let requested = PrintTicket::from_xml(ticket::ticket_xml_for_duplex(job, landscape, document_only));
     let mut document = PrintTicketDocument::parse_from_bytes(requested.get_xml()).map_err(spool_error)?;
     if let Some(media) = media {
@@ -254,6 +261,29 @@ pub(crate) fn submit_with_progress(pdf: &[u8], job: &Job, progress: &mut dyn FnM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simplex_job_feature_does_not_hide_document_duplex() {
+        use winprint::ticket::document::PrintCapabilitiesDocument;
+        for (job_option, document_option, expected) in [
+            ("OneSided", "TwoSidedLongEdge", true),
+            ("OneSided", "TwoSidedShortEdge", true),
+            ("TwoSidedLongEdge", "TwoSidedShortEdge", false),
+            ("OneSided", "OneSided", false),
+        ] {
+            let xml = format!(
+                r#"<psf:PrintCapabilities version="1" xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework" xmlns:psk="{NS_PSK}">
+                <psf:Feature name="psk:JobDuplexAllDocumentsContiguously"><psf:Option name="psk:{job_option}"/></psf:Feature>
+                <psf:Feature name="psk:DocumentDuplex"><psf:Option name="psk:{document_option}"/></psf:Feature>
+                </psf:PrintCapabilities>"#
+            );
+            let capabilities = PrintCapabilities { document: PrintCapabilitiesDocument::parse_from_bytes(xml.as_bytes()).unwrap() };
+            assert_eq!(document_duplex_only(&capabilities), expected, "job={job_option}, document={document_option}");
+            let job = Job { duplex: Some(crate::Duplex::LongEdge), ..Job::default() };
+            let ticket = ticket::ticket_xml_for_duplex(&job, false, document_duplex_only(&capabilities));
+            assert_eq!(ticket.contains("psk:DocumentDuplex"), expected);
+        }
+    }
 
     #[test]
     fn a_missing_printer_never_falls_back_to_another_queue() {
