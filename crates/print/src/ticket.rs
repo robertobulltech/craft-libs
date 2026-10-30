@@ -812,6 +812,7 @@ mod tests {
         assert!(verify_job_options("<not xml", &default, 1, Offered::default()).is_err());
     }
 
+    /// Checks that document duplex drivers keep each requested binding.
     #[test]
     fn document_duplex_drivers_keep_each_requested_binding() {
         for choice in [Duplex::Off, Duplex::LongEdge, Duplex::ShortEdge] {
