@@ -64,7 +64,7 @@ fn document_duplex_only(capabilities: &PrintCapabilities, duplex: Option<crate::
     let offers = |feature| {
         capabilities
             .options_for_feature(OwnedName::qualified(feature, NS_PSK, Some("psk")))
-            .any(|o| o.name.as_ref().is_some_and(|n| n.local_name == wanted))
+            .any(|o| o.name.as_ref().is_some_and(|n| n.namespace_ref() == Some(NS_PSK) && n.local_name == wanted))
     };
     !offers("JobDuplexAllDocumentsContiguously") && offers("DocumentDuplex")
 }
@@ -303,6 +303,30 @@ mod tests {
         }
     }
 
+    /// Vendor options with standard-looking local names cannot claim Print Schema support.
+    #[test]
+    fn duplex_scope_requires_standard_option_namespaces() {
+        use winprint::ticket::document::PrintCapabilitiesDocument;
+        for (job_options, document_options, expected) in [
+            ("<psf:Option name='vendor:TwoSidedLongEdge'/>", "<psf:Option name='psk:TwoSidedLongEdge'/>", true),
+            ("<psf:Option name='psk:OneSided'/>", "<psf:Option name='vendor:TwoSidedLongEdge'/>", false),
+            (
+                "<psf:Option name='vendor:TwoSidedLongEdge'/><psf:Option name='psk:TwoSidedLongEdge'/>",
+                "<psf:Option name='psk:TwoSidedLongEdge'/>",
+                false,
+            ),
+        ] {
+            let xml = format!(
+                r#"<psf:PrintCapabilities version="1" xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework" xmlns:psk="{NS_PSK}" xmlns:vendor="urn:vendor">
+                <psf:Feature name="psk:JobDuplexAllDocumentsContiguously">{job_options}</psf:Feature>
+                <psf:Feature name="psk:DocumentDuplex">{document_options}</psf:Feature>
+                </psf:PrintCapabilities>"#
+            );
+            let capabilities = PrintCapabilities { document: PrintCapabilitiesDocument::parse_from_bytes(xml.as_bytes()).unwrap() };
+            assert_eq!(document_duplex_only(&capabilities, Some(crate::Duplex::LongEdge)), expected);
+        }
+    }
+
     /// Missing queues fail instead of sending private output to a different printer.
     #[test]
     fn a_missing_printer_never_falls_back_to_another_queue() {
@@ -347,7 +371,10 @@ mod tests {
             let offered =
                 [feature, if feature == "JobDuplexAllDocumentsContiguously" { "DocumentDuplex" } else { feature }].into_iter().any(|name| {
                     capabilities.options_for_feature(OwnedName::qualified(name, NS_PSK, Some("psk"))).any(|o| {
-                        o.name.as_ref().is_some_and(|n| n.local_name == wanted || (feature == "PageOutputColor" && n.local_name == "Grayscale"))
+                        o.name.as_ref().is_some_and(|n| {
+                            n.namespace_ref() == Some(NS_PSK) && n.local_name == wanted
+                                || (feature == "PageOutputColor" && n.local_name == "Grayscale")
+                        })
                     })
                 });
             if !offered {
